@@ -1,19 +1,24 @@
 import streamlit as st
 from openai import OpenAI
-import re # Thư viện xử lý chuỗi
+import openai
+import re
 
 # 1. CẤU HÌNH API
+try:
+    API_KEY = st.secrets["OPENAI_API_KEY"]
+except:
+    # Nếu chạy local mà không có secrets, thay key trực tiếp vào đây
+    API_KEY = "sk-xxx" 
 
-API_KEY = st.secrets["OPENAI_API_KEY"]
 client = OpenAI(api_key=API_KEY)
 
 st.set_page_config(page_title="AI THCS Tăng Bạt Hổ", layout="wide")
 
-# CSS tối giản, tập trung vào hiển thị
+# CSS giao diện
 st.markdown("""
     <style>
-    .user-box { background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin: 10px 0; }
-    .ai-box { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin: 10px 0; }
+    .user-box { background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 5px solid #2196F3; }
+    .ai-box { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin: 10px 0; border-left: 5px solid #4CAF50; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -22,60 +27,73 @@ if "messages" not in st.session_state:
 if "assistant_id" not in st.session_state:
     st.session_state["assistant_id"] = None
 
-# HÀM XỬ LÝ HIỂN THỊ (Sửa lỗi ảnh và dọn dẹp rác hệ thống)
+# HÀM HIỂN THỊ THÔNG MINH
 def smart_display(text):
-    # 1. Dọn dẹp các mã trích dẫn lỗi của OpenAI (ví dụ: 【4:0†...】)
+    # Dọn dẹp mã trích dẫn hệ thống 【...】
     clean_text = re.sub(r'【.*?】', '', text)
+    # Tìm từ khóa ảnh (Cho phép dấu gạch dưới)
+    keyword_match = re.search(r'IMAGE_KEYWORD:\s*([\w_]+)', clean_text)
     
-    # 2. Tìm từ khóa ảnh mà AI tạo ra (Ví dụ: IMAGE_KEYWORD: robot)
-    keyword_match = re.search(r'IMAGE_KEYWORD:\s*(\w+)', clean_text)
-    
-    # Hiển thị văn bản sạch trước (loại bỏ dòng IMAGE_KEYWORD)
     final_text = clean_text.split("IMAGE_KEYWORD:")[0]
     st.markdown(final_text)
     
-    # 3. Nếu tìm thấy từ khóa, tự tạo ảnh bằng code Python để đảm bảo không bao giờ lỗi link
     if keyword_match:
         keyword = keyword_match.group(1)
-        # Sử dụng link trực tiếp từ server ảnh
         img_url = f"https://image.pollinations.ai/prompt/{keyword}?width=800&height=500&nologo=true"
         st.image(img_url, caption=f"Hình ảnh minh họa: {keyword}")
 
 st.title("🏫 Hệ Thống Trợ Lý Học Tập")
+st.caption("Trường THCS Tăng Bạt Hổ | Hỗ trợ tài liệu & Kiến thức tổng hợp")
 
 # 2. SIDEBAR
 with st.sidebar:
-    st.header("📂 Giáo viên")
-    uploaded_file = st.file_uploader("Tải tài liệu", type=['pdf', 'txt', 'docx'])
+    st.header("📂 Quản lý")
+    uploaded_file = st.file_uploader("Tải tài liệu giảng dạy", type=['pdf', 'txt', 'docx'])
     
     if uploaded_file and st.session_state["assistant_id"] is None:
         with st.spinner("Đang nạp tri thức..."):
-            file_obj = client.files.create(file=uploaded_file, purpose='assistants')
-            v_store = client.beta.vector_stores.create(name="SchoolData", file_ids=[file_obj.id])
-            
-            # CHỈ THỊ CỰC KỲ ĐƠN GIẢN ĐỂ AI KHÔNG LÀM SAI
-            instruction_prompt = """
-            Bạn là AI hỗ trợ học tập. 
-            Khi trả lời:
-            1. Trả lời ngắn gọn, dễ hiểu dựa trên tài liệu hoặc kiến thức của bạn.
-            2. KHÔNG được dùng các ký hiệu lạ như 【...】.
-            3. CUỐI CÂU LUÔN VIẾT dòng chữ sau: IMAGE_KEYWORD: [từ khóa tiếng Anh về chủ đề đang nói]
-            Ví dụ: IMAGE_KEYWORD: robot
-            """
-            
-            assist = client.beta.assistants.create(
-                name="Assistant",
-                instructions=instruction_prompt,
-                tools=[{"type": "file_search"}],
-                tool_resources={"file_search": {"vector_store_ids": [v_store.id]}},
-                model="gpt-4o"
-            )
-            st.session_state["assistant_id"] = assist.id
-            st.success("Sẵn sàng!")
+            try:
+                # Tải file lên hệ thống
+                file_obj = client.files.create(file=uploaded_file, purpose='assistants')
+                
+                # CHỈ THỊ AI (Ưu tiên file, nếu không có lấy kiến thức mạng)
+                instruction_prompt = """
+                Bạn là AI hỗ trợ học tập của trường THCS Tăng Bạt Hổ. 
+                NHIỆM VỤ:
+                1. ƯU TIÊN FILE: Nếu có tài liệu, tìm trong đó trước. Bắt đầu bằng "[Theo tài liệu]:".
+                2. KIẾN THỨC MẠNG: Nếu tài liệu không có thông tin, hãy dùng kiến thức tổng hợp của bạn để giải đáp chi tiết. Bắt đầu bằng "[Ngoài tài liệu]:".
+                3. HÌNH ẢNH: Luôn kết thúc bằng dòng 'IMAGE_KEYWORD: [từ khóa tiếng Anh]' để minh họa.
+                """
+
+                # KIỂM TRA PHIÊN BẢN ĐỂ TRÁNH LỖI ATTRIBUTE
+                if hasattr(client.beta, 'vector_stores'):
+                    # Cách mới (OpenAI v2)
+                    v_store = client.beta.vector_stores.create(name="SchoolData", file_ids=[file_obj.id])
+                    assist = client.beta.assistants.create(
+                        name="Assistant",
+                        instructions=instruction_prompt,
+                        tools=[{"type": "file_search"}],
+                        tool_resources={"file_search": {"vector_store_ids": [v_store.id]}},
+                        model="gpt-4o"
+                    )
+                else:
+                    # Cách cũ (Dự phòng cho máy chủ chưa cập nhật)
+                    assist = client.beta.assistants.create(
+                        name="Assistant",
+                        instructions=instruction_prompt,
+                        tools=[{"type": "retrieval"}],
+                        file_ids=[file_obj.id],
+                        model="gpt-4-turbo-preview"
+                    )
+                
+                st.session_state["assistant_id"] = assist.id
+                st.success("Tài liệu đã sẵn sàng!")
+            except Exception as e:
+                st.error(f"Lỗi hệ thống: {e}")
 
     if st.button("Xóa hội thoại"):
         st.session_state["messages"] = []
-        st.experimental_rerun()
+        st.rerun()
 
 # 3. HIỂN THỊ CHAT
 for m in st.session_state["messages"]:
@@ -88,20 +106,34 @@ for m in st.session_state["messages"]:
         st.markdown('---')
 
 # 4. NHẬP CÂU HỎI
-user_input = st.text_input("Nhập câu hỏi của em:", key="input_text")
-if st.button("Gửi câu hỏi"):
+# Nếu chưa nạp file, tự động tạo một Assistant "kiến thức mạng" để vẫn dùng được
+if st.session_state["assistant_id"] is None:
+    if st.button("Sử dụng chế độ Kiến thức mạng (Không cần file)"):
+        assist = client.beta.assistants.create(
+            name="General Assistant",
+            instructions="Bạn là AI hỗ trợ học tập. Hãy dùng kiến thức của bạn để trả lời. Cuối câu luôn ghi IMAGE_KEYWORD: [từ khóa tiếng Anh]",
+            model="gpt-4o"
+        )
+        st.session_state["assistant_id"] = assist.id
+        st.rerun()
+
+user_input = st.text_input("Học sinh muốn hỏi gì thầy cô nào?", key="input_text")
+if st.button("Gửi câu hỏi") or (user_input and st.session_state.get('last_input') != user_input):
     if user_input:
         st.session_state["messages"].append({"role": "user", "content": user_input})
         
         if st.session_state["assistant_id"]:
             with st.spinner("Đang tìm câu trả lời..."):
-                thread = client.beta.threads.create(messages=[{"role": "user", "content": user_input}])
-                run = client.beta.threads.runs.create_and_poll(
-                    thread_id=thread.id, 
-                    assistant_id=st.session_state["assistant_id"]
-                )
-                if run.status == 'completed':
-                    messages = client.beta.threads.messages.list(thread_id=thread.id)
-                    ans = messages.data[0].content[0].text.value
-                    st.session_state["messages"].append({"role": "assistant", "content": ans})
-                    st.experimental_rerun()
+                try:
+                    thread = client.beta.threads.create(messages=[{"role": "user", "content": user_input}])
+                    run = client.beta.threads.runs.create_and_poll(
+                        thread_id=thread.id, 
+                        assistant_id=st.session_state["assistant_id"]
+                    )
+                    if run.status == 'completed':
+                        messages = client.beta.threads.messages.list(thread_id=thread.id)
+                        ans = messages.data[0].content[0].text.value
+                        st.session_state["messages"].append({"role": "assistant", "content": ans})
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Lỗi kết nối AI: {e}")
