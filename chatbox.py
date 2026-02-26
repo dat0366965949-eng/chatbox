@@ -8,7 +8,7 @@ try:
     API_KEY = st.secrets["OPENAI_API_KEY"]
 except:
     # Nếu chạy local mà không có secrets, thay key trực tiếp vào đây
-    API_KEY = "sk-xxx" 
+    API_KEY = "sk-xxx"
 
 client = OpenAI(api_key=API_KEY)
 
@@ -33,10 +33,10 @@ def smart_display(text):
     clean_text = re.sub(r'【.*?】', '', text)
     # Tìm từ khóa ảnh (Cho phép dấu gạch dưới)
     keyword_match = re.search(r'IMAGE_KEYWORD:\s*([\w_]+)', clean_text)
-    
+
     final_text = clean_text.split("IMAGE_KEYWORD:")[0]
     st.markdown(final_text)
-    
+
     if keyword_match:
         keyword = keyword_match.group(1)
         img_url = f"https://image.pollinations.ai/prompt/{keyword}?width=800&height=500&nologo=true"
@@ -49,13 +49,13 @@ st.caption("Trường THCS Tăng Bạt Hổ | Hỗ trợ tài liệu & Kiến th
 with st.sidebar:
     st.header("📂 Quản lý")
     uploaded_file = st.file_uploader("Tải tài liệu giảng dạy", type=['pdf', 'txt', 'docx'])
-    
+
     if uploaded_file and st.session_state["assistant_id"] is None:
         with st.spinner("Đang nạp tri thức..."):
             try:
                 # Tải file lên hệ thống
                 file_obj = client.files.create(file=uploaded_file, purpose='assistants')
-                
+
                 # CHỈ THỊ AI (Ưu tiên file, nếu không có lấy kiến thức mạng)
                 instruction_prompt = """
                 Bạn là AI hỗ trợ học tập của trường THCS Tăng Bạt Hổ. 
@@ -65,27 +65,23 @@ with st.sidebar:
                 3. HÌNH ẢNH: Luôn kết thúc bằng dòng 'IMAGE_KEYWORD: [từ khóa tiếng Anh]' để minh họa.
                 """
 
-                # KIỂM TRA PHIÊN BẢN ĐỂ TRÁNH LỖI ATTRIBUTE
-                if hasattr(client.beta, 'vector_stores'):
-                    # Cách mới (OpenAI v2)
-                    v_store = client.beta.vector_stores.create(name="SchoolData", file_ids=[file_obj.id])
-                    assist = client.beta.assistants.create(
-                        name="Assistant",
-                        instructions=instruction_prompt,
-                        tools=[{"type": "file_search"}],
-                        tool_resources={"file_search": {"vector_store_ids": [v_store.id]}},
-                        model="gpt-4o"
-                    )
-                else:
-                    # Cách cũ (Dự phòng cho máy chủ chưa cập nhật)
-                    assist = client.beta.assistants.create(
-                        name="Assistant",
-                        instructions=instruction_prompt,
-                        tools=[{"type": "retrieval"}],
-                        file_ids=[file_obj.id],
-                        model="gpt-4-turbo-preview"
-                    )
-                
+                # ✅ SỬA CHỈ ĐỂ TƯƠNG THÍCH openai 2.x:
+                # vector_stores nằm ở client.vector_stores (không phải client.beta.vector_stores)
+                # và không create kèm file_ids; phải add file qua file_batches + poll
+                v_store = client.vector_stores.create(name="SchoolData")
+                client.vector_stores.file_batches.create_and_poll(
+                    vector_store_id=v_store.id,
+                    file_ids=[file_obj.id],
+                )
+
+                assist = client.beta.assistants.create(
+                    name="Assistant",
+                    instructions=instruction_prompt,
+                    tools=[{"type": "file_search"}],
+                    tool_resources={"file_search": {"vector_store_ids": [v_store.id]}},
+                    model="gpt-4o"
+                )
+
                 st.session_state["assistant_id"] = assist.id
                 st.success("Tài liệu đã sẵn sàng!")
             except Exception as e:
@@ -121,13 +117,13 @@ user_input = st.text_input("Học sinh muốn hỏi gì thầy cô nào?", key="
 if st.button("Gửi câu hỏi") or (user_input and st.session_state.get('last_input') != user_input):
     if user_input:
         st.session_state["messages"].append({"role": "user", "content": user_input})
-        
+
         if st.session_state["assistant_id"]:
             with st.spinner("Đang tìm câu trả lời..."):
                 try:
                     thread = client.beta.threads.create(messages=[{"role": "user", "content": user_input}])
                     run = client.beta.threads.runs.create_and_poll(
-                        thread_id=thread.id, 
+                        thread_id=thread.id,
                         assistant_id=st.session_state["assistant_id"]
                     )
                     if run.status == 'completed':
